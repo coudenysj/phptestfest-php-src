@@ -568,8 +568,9 @@ ZEND_API int zend_use_undefined_constant(zend_string *name, zend_ast_attr attr, 
 		if (EG(exception)) {
 			return FAILURE;
 		} else {
+			zend_string *result_str = zend_string_init(actual, actual_len, 0);
 			zval_ptr_dtor_nogc(result);
-			ZVAL_STRINGL(result, actual, actual_len);
+			ZVAL_NEW_STR(result, result_str);
 		}
 	}
 	return SUCCESS;
@@ -774,7 +775,7 @@ int zend_call_function(zend_fcall_info *fci, zend_fcall_info_cache *fci_cache) /
 		uint32_t call_info;
 
 		ZEND_ASSERT(GC_TYPE((zend_object*)func->op_array.prototype) == IS_OBJECT);
-		GC_REFCOUNT((zend_object*)func->op_array.prototype)++;
+		GC_ADDREF((zend_object*)func->op_array.prototype);
 		call_info = ZEND_CALL_CLOSURE;
 		if (func->common.fn_flags & ZEND_ACC_FAKE_CLOSURE) {
 			call_info |= ZEND_CALL_FAKE_CLOSURE;
