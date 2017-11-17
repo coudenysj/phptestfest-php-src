@@ -1,5 +1,7 @@
 --TEST--
 Test argv passing
+--INI--
+register_argc_argv=On
 --PHPDBG--
 r
 r 1 2 3
@@ -52,5 +54,7 @@ prompt>
 1 2 3
 --FILE--
 <?php
-
+if is_null($argc) || is_null($argv) {
+  die("Error. No parameters inserted!");
+}
 var_dump($argc, $argv);

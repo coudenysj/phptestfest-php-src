@@ -463,6 +463,7 @@ static zend_always_inline zend_uchar zval_get_type(const zval* pz) {
 #define GC_PROTECTED                (1<<1) /* used for recursion detection */
 #define GC_IMMUTABLE                (1<<2) /* can't be canged in place */
 #define GC_PERSISTENT               (1<<3) /* allocated using malloc */
+#define GC_PERSISTENT_LOCAL         (1<<4) /* persistent, but thread-local */
 
 #define GC_ARRAY					(IS_ARRAY          | (GC_COLLECTABLE << GC_FLAGS_SHIFT))
 #define GC_OBJECT					(IS_OBJECT         | (GC_COLLECTABLE << GC_FLAGS_SHIFT))
@@ -490,7 +491,7 @@ static zend_always_inline zend_uchar zval_get_type(const zval* pz) {
 /* string flags (zval.value->gc.u.flags) */
 #define IS_STR_INTERNED				GC_IMMUTABLE  /* interned string */
 #define IS_STR_PERSISTENT			GC_PERSISTENT /* allocated using malloc */
-#define IS_STR_PERMANENT        	(1<<4)        /* relives request boundary */
+#define IS_STR_PERMANENT        	(1<<5)        /* relives request boundary */
 
 /* array flags */
 #define IS_ARRAY_IMMUTABLE			GC_IMMUTABLE
@@ -879,11 +880,19 @@ static zend_always_inline zend_uchar zval_get_type(const zval* pz) {
 
 #if ZEND_RC_DEBUG
 extern ZEND_API zend_bool zend_rc_debug;
-# define ZEND_RC_MOD_CHECK(p) \
-	ZEND_ASSERT(!zend_rc_debug || \
-		((p)->u.v.flags & (GC_IMMUTABLE | GC_PERSISTENT)) == 0)
+# define ZEND_RC_MOD_CHECK(p) do { \
+		if (zend_rc_debug) { \
+			ZEND_ASSERT(!((p)->u.v.flags & GC_IMMUTABLE)); \
+			ZEND_ASSERT(((p)->u.v.flags & (GC_PERSISTENT|GC_PERSISTENT_LOCAL)) != GC_PERSISTENT); \
+		} \
+	} while (0)
+# define GC_MAKE_PERSISTENT_LOCAL(p) do { \
+		GC_FLAGS(p) |= GC_PERSISTENT_LOCAL; \
+	} while (0)
 #else
 # define ZEND_RC_MOD_CHECK(p) \
+	do { } while (0)
+# define GC_MAKE_PERSISTENT_LOCAL(p) \
 	do { } while (0)
 #endif
 
@@ -991,6 +1000,26 @@ static zend_always_inline uint32_t zval_delref_p(zval* pz) {
 				GC_ADDREF(_gc);							\
 			}											\
 		}												\
+	} while (0)
+
+
+/* ZVAL_COPY_OR_DUP() should be used instead of ZVAL_COPY() and ZVAL_DUP()
+ * in all places where the source may be a persistent zval.
+ */
+#define ZVAL_COPY_OR_DUP(z, v)											\
+	do {																\
+		zval *_z1 = (z);												\
+		const zval *_z2 = (v);											\
+		zend_refcounted *_gc = Z_COUNTED_P(_z2);						\
+		uint32_t _t = Z_TYPE_INFO_P(_z2);								\
+		ZVAL_COPY_VALUE_EX(_z1, _z2, _gc, _t);							\
+		if ((_t & (IS_TYPE_REFCOUNTED << Z_TYPE_FLAGS_SHIFT)) != 0) {	\
+			if (EXPECTED(!(GC_FLAGS(_gc) & GC_PERSISTENT))) {			\
+				GC_ADDREF(_gc);											\
+			} else {													\
+				_zval_copy_ctor_func(_z1 ZEND_FILE_LINE_CC); 			\
+			}															\
+		}																\
 	} while (0)
 
 #define ZVAL_DEREF(z) do {								\

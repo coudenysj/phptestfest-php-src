@@ -301,7 +301,7 @@ ZEND_API int zend_ast_evaluate(zval *result, zend_ast *ast, zend_class_entry *sc
 				ret = zend_use_undefined_constant(name, ast->attr, result);
 				break;
 			}
-			ZVAL_DUP(result, zv);
+			ZVAL_COPY_OR_DUP(result, zv);
 			break;
 		}
 		case ZEND_AST_CONSTANT_CLASS:
@@ -457,9 +457,9 @@ ZEND_API int zend_ast_evaluate(zval *result, zend_ast *ast, zend_class_entry *sc
 				zend_fetch_dimension_const(&tmp, &op1, &op2, (ast->attr == ZEND_DIM_IS) ? BP_VAR_IS : BP_VAR_R);
 
 				if (UNEXPECTED(Z_ISREF(tmp))) {
-					ZVAL_DUP(result, Z_REFVAL(tmp));
+					ZVAL_COPY_OR_DUP(result, Z_REFVAL(tmp));
 				} else {
-					ZVAL_DUP(result, &tmp);
+					ZVAL_COPY_OR_DUP(result, &tmp);
 				}
 				zval_ptr_dtor(&tmp);
 				zval_dtor(&op1);
@@ -565,6 +565,8 @@ ZEND_API zend_ast_ref *zend_ast_copy(zend_ast *ast)
 }
 
 ZEND_API void zend_ast_destroy(zend_ast *ast) {
+	zval *zv;
+
 	if (!ast) {
 		return;
 	}
@@ -574,7 +576,13 @@ ZEND_API void zend_ast_destroy(zend_ast *ast) {
 			/* Destroy value without using GC: When opcache moves arrays into SHM it will
 			 * free the zend_array structure, so references to it from outside the op array
 			 * become invalid. GC would cause such a reference in the root buffer. */
-			zval_ptr_dtor_nogc(zend_ast_get_zval(ast));
+			zv = zend_ast_get_zval(ast);
+			if (Z_TYPE_P(zv) == IS_STRING) {
+				/* Compiler may keep REFCOUNTED zvals with INTERNED strings */
+				zend_string_release(Z_STR_P(zv));
+			} else {
+				zval_ptr_dtor_nogc(zv);
+			}
 			break;
 		case ZEND_AST_CONSTANT:
 			zend_string_release(zend_ast_get_constant_name(ast));
