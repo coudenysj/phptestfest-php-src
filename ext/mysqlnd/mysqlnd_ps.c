@@ -82,7 +82,7 @@ MYSQLND_METHOD(mysqlnd_stmt, store_result)(MYSQLND_STMT * const s)
 	result->type			= MYSQLND_RES_PS_BUF;
 /*	result->m.row_decoder = php_mysqlnd_rowp_read_binary_protocol; */
 
-	result->stored_data	= (MYSQLND_RES_BUFFERED *) mysqlnd_result_buffered_zval_init(result->field_count, TRUE);
+	result->stored_data	= (MYSQLND_RES_BUFFERED *) mysqlnd_result_buffered_zval_init(result, result->field_count, TRUE);
 	if (!result->stored_data) {
 		SET_OOM_ERROR(conn->error_info);
 		DBG_RETURN(NULL);
@@ -122,7 +122,7 @@ MYSQLND_METHOD(mysqlnd_stmt, store_result)(MYSQLND_STMT * const s)
 	} else {
 		COPY_CLIENT_ERROR(conn->error_info, result->stored_data->error_info);
 		stmt->result->m.free_result_contents(stmt->result);
-		mnd_efree(stmt->result);
+		mysqlnd_mempool_destroy(stmt->result->memory_pool);
 		stmt->result = NULL;
 		stmt->state = MYSQLND_STMT_PREPARED;
 	}
@@ -173,7 +173,7 @@ MYSQLND_METHOD(mysqlnd_stmt, get_result)(MYSQLND_STMT * const s)
 			break;
 		}
 
-		result->meta = stmt->result->meta->m->clone_metadata(stmt->result->meta);
+		result->meta = stmt->result->meta->m->clone_metadata(result, stmt->result->meta);
 		if (!result->meta) {
 			SET_OOM_ERROR(conn->error_info);
 			break;
@@ -251,14 +251,21 @@ mysqlnd_stmt_skip_metadata(MYSQLND_STMT * s)
 	unsigned int i = 0;
 	enum_func_status ret = FAIL;
 	MYSQLND_PACKET_RES_FIELD field_packet;
+	MYSQLND_MEMORY_POOL * pool;
 
 	DBG_ENTER("mysqlnd_stmt_skip_metadata");
 	if (!stmt || !conn) {
 		DBG_RETURN(FAIL);
 	}
+	pool = mysqlnd_mempool_create(MYSQLND_G(mempool_default_size));
+	if (!pool) {
+		DBG_RETURN(FAIL);
+	}
 	DBG_INF_FMT("stmt=%lu", stmt->stmt_id);
 
 	conn->payload_decoder_factory->m.init_result_field_packet(&field_packet);
+	field_packet.memory_pool = pool;
+
 	ret = PASS;
 	field_packet.skip_parsing = TRUE;
 	for (;i < stmt->param_count; i++) {
@@ -268,6 +275,7 @@ mysqlnd_stmt_skip_metadata(MYSQLND_STMT * s)
 		}
 	}
 	PACKET_FREE(&field_packet);
+	mysqlnd_mempool_destroy(pool);
 
 	DBG_RETURN(ret);
 }
@@ -758,7 +766,7 @@ mysqlnd_stmt_fetch_row_buffered(MYSQLND_RES * result, void * param, const unsign
 
 				if (Z_ISUNDEF(current_row[0])) {
 					uint64_t row_num = (set->data_cursor - set->data) / field_count;
-					enum_func_status rc = result->stored_data->m.row_decoder(result->stored_data->row_buffers[row_num],
+					enum_func_status rc = result->stored_data->m.row_decoder(&result->stored_data->row_buffers[row_num],
 													current_row,
 													meta->field_count,
 													meta->fields,
@@ -878,9 +886,9 @@ mysqlnd_stmt_fetch_row_unbuffered(MYSQLND_RES * result, void * param, const unsi
 			result->unbuf->last_row_data = row_packet->fields;
 			result->unbuf->last_row_buffer = row_packet->row_buffer;
 			row_packet->fields = NULL;
-			row_packet->row_buffer = NULL;
+			row_packet->row_buffer.ptr = NULL;
 
-			if (PASS != result->unbuf->m.row_decoder(result->unbuf->last_row_buffer,
+			if (PASS != result->unbuf->m.row_decoder(&result->unbuf->last_row_buffer,
 									result->unbuf->last_row_data,
 									row_packet->field_count,
 									row_packet->fields_metadata,
@@ -925,8 +933,8 @@ mysqlnd_stmt_fetch_row_unbuffered(MYSQLND_RES * result, void * param, const unsi
 			  report leaks.
 			*/
 			row_packet->result_set_memory_pool->free_chunk(
-				row_packet->result_set_memory_pool, row_packet->row_buffer);
-			row_packet->row_buffer = NULL;
+				row_packet->result_set_memory_pool, row_packet->row_buffer.ptr);
+			row_packet->row_buffer.ptr = NULL;
 		}
 
 		result->unbuf->row_count++;
@@ -1062,9 +1070,9 @@ mysqlnd_fetch_stmt_row_cursor(MYSQLND_RES * result, void * param, const unsigned
 			result->unbuf->last_row_data = row_packet->fields;
 			result->unbuf->last_row_buffer = row_packet->row_buffer;
 			row_packet->fields = NULL;
-			row_packet->row_buffer = NULL;
+			row_packet->row_buffer.ptr = NULL;
 
-			if (PASS != result->unbuf->m.row_decoder(result->unbuf->last_row_buffer,
+			if (PASS != result->unbuf->m.row_decoder(&result->unbuf->last_row_buffer,
 									  result->unbuf->last_row_data,
 									  row_packet->field_count,
 									  row_packet->fields_metadata,
@@ -1114,15 +1122,15 @@ mysqlnd_fetch_stmt_row_cursor(MYSQLND_RES * result, void * param, const unsigned
 			  report leaks.
 			*/
 			row_packet->result_set_memory_pool->free_chunk(
-				row_packet->result_set_memory_pool, row_packet->row_buffer);
-			row_packet->row_buffer = NULL;
+				row_packet->result_set_memory_pool, row_packet->row_buffer.ptr);
+			row_packet->row_buffer.ptr = NULL;
 		}
 		/* We asked for one row, the next one should be EOF, eat it */
 		ret = PACKET_READ(conn, row_packet);
-		if (row_packet->row_buffer) {
+		if (row_packet->row_buffer.ptr) {
 			row_packet->result_set_memory_pool->free_chunk(
-				row_packet->result_set_memory_pool, row_packet->row_buffer);
-			row_packet->row_buffer = NULL;
+				row_packet->result_set_memory_pool, row_packet->row_buffer.ptr);
+			row_packet->row_buffer.ptr = NULL;
 		}
 		MYSQLND_INC_CONN_STATISTIC(conn->stats, STAT_ROWS_FETCHED_FROM_CLIENT_PS_CURSOR);
 
@@ -1835,12 +1843,12 @@ MYSQLND_METHOD(mysqlnd_stmt, result_metadata)(MYSQLND_STMT * const s)
 			break;
 		}
 		result_meta->type = MYSQLND_RES_NORMAL;
-		result_meta->unbuf = mysqlnd_result_unbuffered_init(stmt->field_count, TRUE);
+		result_meta->unbuf = mysqlnd_result_unbuffered_init(result_meta, stmt->field_count, TRUE);
 		if (!result_meta->unbuf) {
 			break;
 		}
 		result_meta->unbuf->eof_reached = TRUE;
-		result_meta->meta = stmt->result->meta->m->clone_metadata(stmt->result->meta);
+		result_meta->meta = stmt->result->meta->m->clone_metadata(result_meta, stmt->result->meta);
 		if (!result_meta->meta) {
 			break;
 		}
@@ -2092,11 +2100,7 @@ MYSQLND_METHOD(mysqlnd_stmt, free_stmt_result)(MYSQLND_STMT * const s)
 		stmt->result->m.free_result_internal(stmt->result);
 		stmt->result = NULL;
 	}
-	if (stmt->error_info->error_list) {
-		zend_llist_clean(stmt->error_info->error_list);
-		mnd_efree(stmt->error_info->error_list);
-		stmt->error_info->error_list = NULL;
-	}
+	zend_llist_clean(&stmt->error_info->error_list);
 
 	DBG_VOID_RETURN;
 }

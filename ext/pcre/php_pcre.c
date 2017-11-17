@@ -196,8 +196,8 @@ static void php_pcre_init_pcre2(uint8_t jit)
 		mdata = pcre2_match_data_create(PHP_PCRE_PREALLOC_MDATA_SIZE, gctx);
 		if (!mdata) {
 			pcre2_init_ok = 0;
+			return;
 		}
-		return;
 	}
 
 	pcre2_init_ok = 1;
@@ -243,6 +243,9 @@ static PHP_GINIT_FUNCTION(pcre) /* {{{ */
 	pcre_globals->backtrack_limit = 0;
 	pcre_globals->recursion_limit = 0;
 	pcre_globals->error_code      = PHP_PCRE_NO_ERROR;
+#ifdef HAVE_PCRE_JIT_SUPPORT
+	pcre_globals->jit = 1;
+#endif
 
 	php_pcre_init_pcre2(1);
 }
@@ -723,7 +726,10 @@ PHPAPI pcre_cache_entry* pcre_get_compiled_regex_cache(zend_string *regex)
 		/* Enable PCRE JIT compiler */
 		rc = pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
 		if (EXPECTED(rc >= 0)) {
-			poptions |= PREG_JIT;
+			size_t jit_size = 0;
+			if (!pcre2_pattern_info(re, PCRE2_INFO_JITSIZE, &jit_size) && jit_size > 0) {
+				poptions |= PREG_JIT;
+			}
 		} else {
 			pcre2_get_error_message(rc, error, sizeof(error));
 			php_error_docref(NULL, E_WARNING, "JIT compilation failed: %s", error);
@@ -1412,8 +1418,12 @@ static zend_string *preg_do_repl_func(zend_fcall_info *fci, zend_fcall_info_cach
 	fci->no_separation = 0;
 
 	if (zend_call_function(fci, fcc) == SUCCESS && Z_TYPE(retval) != IS_UNDEF) {
-		result_str = zval_get_string(&retval);
-		zval_ptr_dtor(&retval);
+		if (EXPECTED(Z_TYPE(retval) == IS_STRING)) {
+			result_str = Z_STR(retval);
+		} else {
+			result_str = zval_get_string_func(&retval);
+			zval_ptr_dtor(&retval);
+		}
 	} else {
 		if (!EG(exception)) {
 			php_error_docref(NULL, E_WARNING, "Unable to call custom replacement function");
@@ -1930,7 +1940,7 @@ static zend_string *php_pcre_replace_array(HashTable *regex, zval *replace, zend
 {
 	zval		*regex_entry;
 	zend_string *result;
-	zend_string *replace_str;
+	zend_string *replace_str, *tmp_replace_str;
 
 	if (Z_TYPE_P(replace) == IS_ARRAY) {
 		uint32_t replace_idx = 0;
@@ -1939,19 +1949,21 @@ static zend_string *php_pcre_replace_array(HashTable *regex, zval *replace, zend
 		/* For each entry in the regex array, get the entry */
 		ZEND_HASH_FOREACH_VAL(regex, regex_entry) {
 			/* Make sure we're dealing with strings. */
-			zend_string *regex_str = zval_get_string(regex_entry);
+			zend_string *tmp_regex_str;
+			zend_string *regex_str = zval_get_tmp_string(regex_entry, &tmp_regex_str);
 			zval *zv;
 
 			/* Get current entry */
 			while (1) {
 				if (replace_idx == replace_ht->nNumUsed) {
 					replace_str = ZSTR_EMPTY_ALLOC();
+					tmp_replace_str = NULL;
 					break;
 				}
 				zv = &replace_ht->arData[replace_idx].val;
 				replace_idx++;
 				if (Z_TYPE_P(zv) != IS_UNDEF) {
-					replace_str = zval_get_string(zv);
+					replace_str = zval_get_tmp_string(zv, &tmp_replace_str);
 					break;
 				}
 			}
@@ -1965,8 +1977,8 @@ static zend_string *php_pcre_replace_array(HashTable *regex, zval *replace, zend
 									  replace_str,
 									  limit,
 									  replace_count);
-			zend_string_release(replace_str);
-			zend_string_release(regex_str);
+			zend_tmp_string_release(tmp_replace_str);
+			zend_tmp_string_release(tmp_regex_str);
 			zend_string_release(subject_str);
 			subject_str = result;
 			if (UNEXPECTED(result == NULL)) {
@@ -1980,7 +1992,8 @@ static zend_string *php_pcre_replace_array(HashTable *regex, zval *replace, zend
 		/* For each entry in the regex array, get the entry */
 		ZEND_HASH_FOREACH_VAL(regex, regex_entry) {
 			/* Make sure we're dealing with strings. */
-			zend_string *regex_str = zval_get_string(regex_entry);
+			zend_string *tmp_regex_str;
+			zend_string *regex_str = zval_get_tmp_string(regex_entry, &tmp_regex_str);
 
 			/* Do the actual replacement and put the result back into subject_str
 			   for further replacements. */
@@ -1991,7 +2004,7 @@ static zend_string *php_pcre_replace_array(HashTable *regex, zval *replace, zend
 									  replace_str,
 									  limit,
 									  replace_count);
-			zend_string_release(regex_str);
+			zend_tmp_string_release(tmp_regex_str);
 			zend_string_release(subject_str);
 			subject_str = result;
 
@@ -2054,7 +2067,8 @@ static zend_string *php_replace_in_subject_func(zval *regex, zend_fcall_info *fc
 		/* For each entry in the regex array, get the entry */
 		ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(regex), regex_entry) {
 			/* Make sure we're dealing with strings. */
-			zend_string *regex_str = zval_get_string(regex_entry);
+			zend_string *tmp_regex_str;
+			zend_string *regex_str = zval_get_tmp_string(regex_entry, &tmp_regex_str);
 
 			/* Do the actual replacement and put the result back into subject_str
 			   for further replacements. */
@@ -2063,7 +2077,7 @@ static zend_string *php_replace_in_subject_func(zval *regex, zend_fcall_info *fc
 										   fci, fcc,
 										   limit,
 										   replace_count);
-			zend_string_release(regex_str);
+			zend_tmp_string_release(tmp_regex_str);
 			zend_string_release(subject_str);
 			subject_str = result;
 			if (UNEXPECTED(result == NULL)) {

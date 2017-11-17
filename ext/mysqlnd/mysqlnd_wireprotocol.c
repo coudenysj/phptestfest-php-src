@@ -1290,7 +1290,7 @@ php_mysqlnd_rset_field_read(MYSQLND_CONN_DATA * conn, void * _packet)
 	{
 		BAIL_IF_NO_MORE_DATA;
 		DBG_INF_FMT("Def found, length %lu", len);
-		meta->def = mnd_emalloc(len + 1);
+		meta->def = packet->memory_pool->get_chunk(packet->memory_pool, len + 1);
 		if (!meta->def) {
 			SET_OOM_ERROR(error_info);
 			DBG_RETURN(FAIL);
@@ -1301,7 +1301,7 @@ php_mysqlnd_rset_field_read(MYSQLND_CONN_DATA * conn, void * _packet)
 		p += len;
 	}
 
-	root_ptr = meta->root = mnd_emalloc(total_len);
+	root_ptr = meta->root = packet->memory_pool->get_chunk(packet->memory_pool, total_len);
 	if (!root_ptr) {
 		SET_OOM_ERROR(error_info);
 		DBG_RETURN(FAIL);
@@ -1381,7 +1381,7 @@ php_mysqlnd_read_row_ex(MYSQLND_PFC * pfc,
 						MYSQLND_STATS * stats,
 						MYSQLND_ERROR_INFO * error_info,
 						MYSQLND_MEMORY_POOL * pool,
-						MYSQLND_MEMORY_POOL_CHUNK ** buffer,
+						MYSQLND_ROW_BUFFER * buffer,
 						size_t * data_size)
 {
 	enum_func_status ret = PASS;
@@ -1417,12 +1417,12 @@ php_mysqlnd_read_row_ex(MYSQLND_PFC * pfc,
 
 		if (first_iteration) {
 			first_iteration = FALSE;
-			*buffer = pool->get_chunk(pool, *data_size + prealloc_more_bytes);
-			if (!*buffer) {
+			buffer->ptr = pool->get_chunk(pool, *data_size + prealloc_more_bytes);
+			if (!buffer->ptr) {
 				ret = FAIL;
 				break;
 			}
-			p = (*buffer)->ptr;
+			p = buffer->ptr;
 		} else if (!first_iteration) {
 			/* Empty packet after MYSQLND_MAX_PACKET_SIZE packet. That's ok, break */
 			if (!header.size) {
@@ -1432,13 +1432,14 @@ php_mysqlnd_read_row_ex(MYSQLND_PFC * pfc,
 			/*
 			  We have to realloc the buffer.
 			*/
-			if (FAIL == pool->resize_chunk(pool, *buffer, *data_size + prealloc_more_bytes)) {
+			buffer->ptr = pool->resize_chunk(pool, buffer->ptr, *data_size - header.size, *data_size + prealloc_more_bytes);
+			if (!buffer->ptr) {
 				SET_OOM_ERROR(error_info);
 				ret = FAIL;
 				break;
 			}
 			/* The position could have changed, recalculate */
-			p = (*buffer)->ptr + (*data_size - header.size);
+			p = (zend_uchar *) buffer->ptr + (*data_size - header.size);
 		}
 
 		if (PASS != (ret = pfc->data->m.receive(pfc, vio, p, header.size, stats, error_info))) {
@@ -1451,9 +1452,9 @@ php_mysqlnd_read_row_ex(MYSQLND_PFC * pfc,
 			break;
 		}
 	}
-	if (ret == FAIL && *buffer) {
-		pool->free_chunk(pool, *buffer);
-		*buffer = NULL;
+	if (ret == FAIL && buffer->ptr) {
+		pool->free_chunk(pool, buffer->ptr);
+		buffer->ptr = NULL;
 	}
 	DBG_RETURN(ret);
 }
@@ -1462,7 +1463,7 @@ php_mysqlnd_read_row_ex(MYSQLND_PFC * pfc,
 
 /* {{{ php_mysqlnd_rowp_read_binary_protocol */
 enum_func_status
-php_mysqlnd_rowp_read_binary_protocol(MYSQLND_MEMORY_POOL_CHUNK * row_buffer, zval * fields,
+php_mysqlnd_rowp_read_binary_protocol(MYSQLND_ROW_BUFFER * row_buffer, zval * fields,
 									  unsigned int field_count, const MYSQLND_FIELD * fields_metadata,
 									  zend_bool as_int_or_float, MYSQLND_STATS * stats)
 {
@@ -1553,15 +1554,15 @@ php_mysqlnd_rowp_read_binary_protocol(MYSQLND_MEMORY_POOL_CHUNK * row_buffer, zv
 
 /* {{{ php_mysqlnd_rowp_read_text_protocol */
 enum_func_status
-php_mysqlnd_rowp_read_text_protocol_aux(MYSQLND_MEMORY_POOL_CHUNK * row_buffer, zval * fields,
+php_mysqlnd_rowp_read_text_protocol_aux(MYSQLND_ROW_BUFFER * row_buffer, zval * fields,
 									unsigned int field_count, const MYSQLND_FIELD * fields_metadata,
 									zend_bool as_int_or_float, MYSQLND_STATS * stats)
 {
 	unsigned int i;
 	zval *current_field, *end_field, *start_field;
 	zend_uchar * p = row_buffer->ptr;
-	size_t data_size = row_buffer->app;
-	const zend_uchar * const packet_end = (zend_uchar*) row_buffer->ptr + data_size;
+	size_t data_size = row_buffer->size;
+	const zend_uchar * const packet_end = (zend_uchar*) p + data_size;
 
 	DBG_ENTER("php_mysqlnd_rowp_read_text_protocol_aux");
 
@@ -1706,7 +1707,7 @@ php_mysqlnd_rowp_read_text_protocol_aux(MYSQLND_MEMORY_POOL_CHUNK * row_buffer, 
 
 /* {{{ php_mysqlnd_rowp_read_text_protocol_zval */
 enum_func_status
-php_mysqlnd_rowp_read_text_protocol_zval(MYSQLND_MEMORY_POOL_CHUNK * row_buffer, zval * fields,
+php_mysqlnd_rowp_read_text_protocol_zval(MYSQLND_ROW_BUFFER * row_buffer, zval * fields,
 									unsigned int field_count, const MYSQLND_FIELD * fields_metadata,
 									zend_bool as_int_or_float, MYSQLND_STATS * stats)
 {
@@ -1720,7 +1721,7 @@ php_mysqlnd_rowp_read_text_protocol_zval(MYSQLND_MEMORY_POOL_CHUNK * row_buffer,
 
 /* {{{ php_mysqlnd_rowp_read_text_protocol_c */
 enum_func_status
-php_mysqlnd_rowp_read_text_protocol_c(MYSQLND_MEMORY_POOL_CHUNK * row_buffer, zval * fields,
+php_mysqlnd_rowp_read_text_protocol_c(MYSQLND_ROW_BUFFER * row_buffer, zval * fields,
 									unsigned int field_count, const MYSQLND_FIELD * fields_metadata,
 									zend_bool as_int_or_float, MYSQLND_STATS * stats)
 {
@@ -1771,9 +1772,9 @@ php_mysqlnd_rowp_read(MYSQLND_CONN_DATA * conn, void * _packet)
 	  to keep (and copy) the lengths externally.
 	*/
 	packet->header.size = data_size;
-	packet->row_buffer->app = data_size;
+	packet->row_buffer.size = data_size;
 
-	if (ERROR_MARKER == (*(p = packet->row_buffer->ptr))) {
+	if (ERROR_MARKER == (*(p = packet->row_buffer.ptr))) {
 		/*
 		   Error message as part of the result set,
 		   not good but we should not hang. See:
@@ -1840,9 +1841,9 @@ php_mysqlnd_rowp_free_mem(void * _packet)
 
 	DBG_ENTER("php_mysqlnd_rowp_free_mem");
 	p = (MYSQLND_PACKET_ROW *) _packet;
-	if (p->row_buffer) {
-		p->result_set_memory_pool->free_chunk(p->result_set_memory_pool, p->row_buffer);
-		p->row_buffer = NULL;
+	if (p->row_buffer.ptr) {
+		p->result_set_memory_pool->free_chunk(p->result_set_memory_pool, p->row_buffer.ptr);
+		p->row_buffer.ptr = NULL;
 	}
 	/*
 	  Don't free packet->fields :
