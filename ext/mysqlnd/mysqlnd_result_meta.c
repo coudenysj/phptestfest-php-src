@@ -53,15 +53,11 @@ static enum_func_status
 MYSQLND_METHOD(mysqlnd_res_meta, read_metadata)(MYSQLND_RES_METADATA * const meta, MYSQLND_CONN_DATA * conn)
 {
 	unsigned int i = 0;
-	MYSQLND_PACKET_RES_FIELD * field_packet;
+	MYSQLND_PACKET_RES_FIELD field_packet;
 
 	DBG_ENTER("mysqlnd_res_meta::read_metadata");
 
-	field_packet = conn->payload_decoder_factory->m.get_result_field_packet(conn->payload_decoder_factory, FALSE);
-	if (!field_packet) {
-		SET_OOM_ERROR(conn->error_info);
-		DBG_RETURN(FAIL);
-	}
+	conn->payload_decoder_factory->m.init_result_field_packet(&field_packet);
 	for (;i < meta->field_count; i++) {
 		zend_ulong idx;
 
@@ -71,31 +67,31 @@ MYSQLND_METHOD(mysqlnd_res_meta, read_metadata)(MYSQLND_RES_METADATA * const met
 			meta->fields[i].root = NULL;
 		}
 
-		field_packet->metadata = &(meta->fields[i]);
-		if (FAIL == PACKET_READ(field_packet)) {
-			PACKET_FREE(field_packet);
+		field_packet.metadata = &(meta->fields[i]);
+		if (FAIL == PACKET_READ(conn, &field_packet)) {
+			PACKET_FREE(&field_packet);
 			DBG_RETURN(FAIL);
 		}
-		if (field_packet->error_info.error_no) {
-			COPY_CLIENT_ERROR(conn->error_info, field_packet->error_info);
+		if (field_packet.error_info.error_no) {
+			COPY_CLIENT_ERROR(conn->error_info, field_packet.error_info);
 			/* Return back from CONN_QUERY_SENT */
-			PACKET_FREE(field_packet);
+			PACKET_FREE(&field_packet);
 			DBG_RETURN(FAIL);
 		}
 
 		if (mysqlnd_ps_fetch_functions[meta->fields[i].type].func == NULL) {
 			DBG_ERR_FMT("Unknown type %u sent by the server.  Please send a report to the developers", meta->fields[i].type);
 			php_error_docref(NULL, E_WARNING, "Unknown type %u sent by the server. Please send a report to the developers", meta->fields[i].type);
-			PACKET_FREE(field_packet);
+			PACKET_FREE(&field_packet);
 			DBG_RETURN(FAIL);
 		}
 
 		/* For BC we have to check whether the key is numeric and use it like this */
-		if ((meta->zend_hash_keys[i].is_numeric = ZEND_HANDLE_NUMERIC(field_packet->metadata->sname, idx))) {
-			meta->zend_hash_keys[i].key = idx;
+		if ((meta->fields[i].is_numeric = ZEND_HANDLE_NUMERIC(field_packet.metadata->sname, idx))) {
+			meta->fields[i].num_key = idx;
 		}
 	}
-	PACKET_FREE(field_packet);
+	PACKET_FREE(&field_packet);
 
 	DBG_RETURN(PASS);
 }
@@ -120,11 +116,6 @@ MYSQLND_METHOD(mysqlnd_res_meta, free)(MYSQLND_RES_METADATA * meta)
 		meta->fields = NULL;
 	}
 
-	if (meta->zend_hash_keys) {
-		DBG_INF("Freeing zend_hash_keys");
-		mnd_efree(meta->zend_hash_keys);
-		meta->zend_hash_keys = NULL;
-	}
 	DBG_INF("Freeing metadata structure");
 	mnd_efree(meta);
 
@@ -142,7 +133,6 @@ MYSQLND_METHOD(mysqlnd_res_meta, clone_metadata)(const MYSQLND_RES_METADATA * co
 	MYSQLND_RES_METADATA * new_meta = NULL;
 	MYSQLND_FIELD * new_fields;
 	MYSQLND_FIELD * orig_fields = meta->fields;
-	size_t len = meta->field_count * sizeof(struct mysqlnd_field_hash_key);
 
 	DBG_ENTER("mysqlnd_res_meta::clone_metadata");
 
@@ -156,12 +146,6 @@ MYSQLND_METHOD(mysqlnd_res_meta, clone_metadata)(const MYSQLND_RES_METADATA * co
 	if (!new_fields) {
 		goto oom;
 	}
-
-	new_meta->zend_hash_keys = mnd_emalloc(len);
-	if (!new_meta->zend_hash_keys) {
-		goto oom;
-	}
-	memcpy(new_meta->zend_hash_keys, meta->zend_hash_keys, len);
 
 	/*
 	  This will copy also the strings and the root, which we will have
@@ -183,6 +167,9 @@ MYSQLND_METHOD(mysqlnd_res_meta, clone_metadata)(const MYSQLND_RES_METADATA * co
 			new_fields[i].name = ZSTR_VAL(new_fields[i].sname);
 			new_fields[i].name_length = ZSTR_LEN(new_fields[i].sname);
 		}
+
+		new_fields[i].is_numeric = orig_fields[i].is_numeric;
+		new_fields[i].num_key = orig_fields[i].num_key;
 
 		if (orig_fields[i].org_name && orig_fields[i].org_name != mysqlnd_empty_string) {
 			new_fields[i].org_name = new_fields[i].root +
@@ -320,8 +307,7 @@ mysqlnd_result_meta_init(unsigned int field_count)
 		ret->field_count = field_count;
 		/* +1 is to have empty marker at the end */
 		ret->fields = mnd_ecalloc(field_count + 1, sizeof(MYSQLND_FIELD));
-		ret->zend_hash_keys = mnd_ecalloc(field_count, sizeof(struct mysqlnd_field_hash_key));
-		if (!ret->fields || !ret->zend_hash_keys) {
+		if (!ret->fields) {
 			break;
 		}
 		DBG_INF_FMT("meta=%p", ret);

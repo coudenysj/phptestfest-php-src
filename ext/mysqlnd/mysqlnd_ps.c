@@ -250,7 +250,7 @@ mysqlnd_stmt_skip_metadata(MYSQLND_STMT * s)
 	/* Follows parameter metadata, we have just to skip it, as libmysql does */
 	unsigned int i = 0;
 	enum_func_status ret = FAIL;
-	MYSQLND_PACKET_RES_FIELD * field_packet;
+	MYSQLND_PACKET_RES_FIELD field_packet;
 
 	DBG_ENTER("mysqlnd_stmt_skip_metadata");
 	if (!stmt || !conn) {
@@ -258,21 +258,16 @@ mysqlnd_stmt_skip_metadata(MYSQLND_STMT * s)
 	}
 	DBG_INF_FMT("stmt=%lu", stmt->stmt_id);
 
-	field_packet = conn->payload_decoder_factory->m.get_result_field_packet(conn->payload_decoder_factory, FALSE);
-	if (!field_packet) {
-		SET_OOM_ERROR(stmt->error_info);
-		SET_OOM_ERROR(conn->error_info);
-	} else {
-		ret = PASS;
-		field_packet->skip_parsing = TRUE;
-		for (;i < stmt->param_count; i++) {
-			if (FAIL == PACKET_READ(field_packet)) {
-				ret = FAIL;
-				break;
-			}
+	conn->payload_decoder_factory->m.init_result_field_packet(&field_packet);
+	ret = PASS;
+	field_packet.skip_parsing = TRUE;
+	for (;i < stmt->param_count; i++) {
+		if (FAIL == PACKET_READ(conn, &field_packet)) {
+			ret = FAIL;
+			break;
 		}
-		PACKET_FREE(field_packet);
 	}
+	PACKET_FREE(&field_packet);
 
 	DBG_RETURN(ret);
 }
@@ -285,7 +280,7 @@ mysqlnd_stmt_read_prepare_response(MYSQLND_STMT * s)
 {
 	MYSQLND_STMT_DATA * stmt = s? s->data : NULL;
 	MYSQLND_CONN_DATA * conn = stmt? stmt->conn : NULL;
-	MYSQLND_PACKET_PREPARE_RESPONSE * prepare_resp;
+	MYSQLND_PACKET_PREPARE_RESPONSE prepare_resp;
 	enum_func_status ret = FAIL;
 
 	DBG_ENTER("mysqlnd_stmt_read_prepare_response");
@@ -294,30 +289,25 @@ mysqlnd_stmt_read_prepare_response(MYSQLND_STMT * s)
 	}
 	DBG_INF_FMT("stmt=%lu", stmt->stmt_id);
 
-	prepare_resp = conn->payload_decoder_factory->m.get_prepare_response_packet(conn->payload_decoder_factory, FALSE);
-	if (!prepare_resp) {
-		SET_OOM_ERROR(stmt->error_info);
-		SET_OOM_ERROR(conn->error_info);
+	conn->payload_decoder_factory->m.init_prepare_response_packet(&prepare_resp);
+
+	if (FAIL == PACKET_READ(conn, &prepare_resp)) {
 		goto done;
 	}
 
-	if (FAIL == PACKET_READ(prepare_resp)) {
-		goto done;
-	}
-
-	if (0xFF == prepare_resp->error_code) {
-		COPY_CLIENT_ERROR(stmt->error_info, prepare_resp->error_info);
-		COPY_CLIENT_ERROR(conn->error_info, prepare_resp->error_info);
+	if (0xFF == prepare_resp.error_code) {
+		COPY_CLIENT_ERROR(stmt->error_info, prepare_resp.error_info);
+		COPY_CLIENT_ERROR(conn->error_info, prepare_resp.error_info);
 		goto done;
 	}
 	ret = PASS;
-	stmt->stmt_id = prepare_resp->stmt_id;
-	UPSERT_STATUS_SET_WARNINGS(conn->upsert_status, prepare_resp->warning_count);
+	stmt->stmt_id = prepare_resp.stmt_id;
+	UPSERT_STATUS_SET_WARNINGS(conn->upsert_status, prepare_resp.warning_count);
 	UPSERT_STATUS_SET_AFFECTED_ROWS(stmt->upsert_status, 0);  /* be like libmysql */
-	stmt->field_count = conn->field_count = prepare_resp->field_count;
-	stmt->param_count = prepare_resp->param_count;
+	stmt->field_count = conn->field_count = prepare_resp.field_count;
+	stmt->param_count = prepare_resp.param_count;
 done:
-	PACKET_FREE(prepare_resp);
+	PACKET_FREE(&prepare_resp);
 
 	DBG_RETURN(ret);
 }
@@ -330,7 +320,7 @@ mysqlnd_stmt_prepare_read_eof(MYSQLND_STMT * s)
 {
 	MYSQLND_STMT_DATA * stmt = s? s->data : NULL;
 	MYSQLND_CONN_DATA * conn = stmt? stmt->conn : NULL;
-	MYSQLND_PACKET_EOF * fields_eof;
+	MYSQLND_PACKET_EOF fields_eof;
 	enum_func_status ret = FAIL;
 
 	DBG_ENTER("mysqlnd_stmt_prepare_read_eof");
@@ -339,29 +329,23 @@ mysqlnd_stmt_prepare_read_eof(MYSQLND_STMT * s)
 	}
 	DBG_INF_FMT("stmt=%lu", stmt->stmt_id);
 
-	fields_eof = conn->payload_decoder_factory->m.get_eof_packet(conn->payload_decoder_factory, FALSE);
-	if (!fields_eof) {
-		SET_OOM_ERROR(stmt->error_info);
-		SET_OOM_ERROR(conn->error_info);
-	} else {
-		if (FAIL == (ret = PACKET_READ(fields_eof))) {
-			if (stmt->result) {
-				stmt->result->m.free_result_contents(stmt->result);
-				mnd_efree(stmt->result);
-				/* XXX: This will crash, because we will null also the methods.
-					But seems it happens in extreme cases or doesn't. Should be fixed by exporting a function
-					(from mysqlnd_driver.c?) to do the reset.
-					This bad handling is also in mysqlnd_result.c
-				*/
-				memset(stmt, 0, sizeof(MYSQLND_STMT_DATA));
-				stmt->state = MYSQLND_STMT_INITTED;
-			}
-		} else {
-			UPSERT_STATUS_SET_SERVER_STATUS(stmt->upsert_status, fields_eof->server_status);
-			UPSERT_STATUS_SET_WARNINGS(stmt->upsert_status, fields_eof->warning_count);
-			stmt->state = MYSQLND_STMT_PREPARED;
+	conn->payload_decoder_factory->m.init_eof_packet(&fields_eof);
+	if (FAIL == (ret = PACKET_READ(conn, &fields_eof))) {
+		if (stmt->result) {
+			stmt->result->m.free_result_contents(stmt->result);
+			mnd_efree(stmt->result);
+			/* XXX: This will crash, because we will null also the methods.
+				But seems it happens in extreme cases or doesn't. Should be fixed by exporting a function
+				(from mysqlnd_driver.c?) to do the reset.
+				This bad handling is also in mysqlnd_result.c
+			*/
+			memset(stmt, 0, sizeof(MYSQLND_STMT_DATA));
+			stmt->state = MYSQLND_STMT_INITTED;
 		}
-		PACKET_FREE(fields_eof);
+	} else {
+		UPSERT_STATUS_SET_SERVER_STATUS(stmt->upsert_status, fields_eof.server_status);
+		UPSERT_STATUS_SET_WARNINGS(stmt->upsert_status, fields_eof.warning_count);
+		stmt->state = MYSQLND_STMT_PREPARED;
 	}
 
 	DBG_RETURN(ret);
@@ -416,11 +400,8 @@ MYSQLND_METHOD(mysqlnd_stmt, prepare)(MYSQLND_STMT * const s, const char * const
 	{
 		enum_func_status ret = FAIL;
 		const MYSQLND_CSTRING query_string = {query, query_len};
-		struct st_mysqlnd_protocol_command * command = conn->command_factory(COM_STMT_PREPARE, conn, query_string);
-		if (command) {
-			ret = command->run(command);
-			command->free_command(command);
-		}
+
+		ret = conn->run_command(COM_STMT_PREPARE, conn, query_string);
 		if (FAIL == ret) {
 			goto fail;
 		}
@@ -729,12 +710,8 @@ MYSQLND_METHOD(mysqlnd_stmt, send_execute)(MYSQLND_STMT * const s, const enum_my
 	ret = s->m->generate_execute_request(s, &request, &request_len, &free_request);
 	if (ret == PASS) {
 		const MYSQLND_CSTRING payload = {(const char*) request, request_len};
-		struct st_mysqlnd_protocol_command * command = conn->command_factory(COM_STMT_EXECUTE, conn, payload);
-		ret = FAIL;
-		if (command) {
-			ret = command->run(command);
-			command->free_command(command);
-		}	
+
+		ret = conn->run_command(COM_STMT_EXECUTE, conn, payload);
 	} else {
 		SET_CLIENT_ERROR(stmt->error_info, CR_UNKNOWN_ERROR, UNKNOWN_SQLSTATE, "Couldn't generate the request. Possibly OOM.");
 	}
@@ -892,7 +869,7 @@ mysqlnd_stmt_fetch_row_unbuffered(MYSQLND_RES * result, void * param, const unsi
 	  If we skip rows (stmt == NULL || stmt->result_bind == NULL) we have to
 	  result->unbuf->m.free_last_data() before it. The function returns always true.
 	*/
-	if (PASS == (ret = PACKET_READ(row_packet)) && !row_packet->eof) {
+	if (PASS == (ret = PACKET_READ(conn, row_packet)) && !row_packet->eof) {
 		unsigned int i, field_count = result->field_count;
 
 		if (!row_packet->skip_extraction) {
@@ -1063,16 +1040,10 @@ mysqlnd_fetch_stmt_row_cursor(MYSQLND_RES * result, void * param, const unsigned
 
 	{
 		const MYSQLND_CSTRING payload = {(const char*) buf, sizeof(buf)};
-		struct st_mysqlnd_protocol_command * command = conn->command_factory(COM_STMT_FETCH, conn, payload);
-		ret = FAIL;
-		if (command) {
-			ret = command->run(command);
-			command->free_command(command);
-			if (ret == FAIL) {
-				COPY_CLIENT_ERROR(stmt->error_info, *conn->error_info);	
-			}
-		}
-		if (FAIL == ret) {
+
+		ret = conn->run_command(COM_STMT_FETCH, conn, payload);
+		if (ret == FAIL) {
+			COPY_CLIENT_ERROR(stmt->error_info, *conn->error_info);	
 			DBG_RETURN(FAIL);
 		}
 
@@ -1081,7 +1052,7 @@ mysqlnd_fetch_stmt_row_cursor(MYSQLND_RES * result, void * param, const unsigned
 	row_packet->skip_extraction = stmt->result_bind? FALSE:TRUE;
 
 	UPSERT_STATUS_RESET(stmt->upsert_status);
-	if (PASS == (ret = PACKET_READ(row_packet)) && !row_packet->eof) {
+	if (PASS == (ret = PACKET_READ(conn, row_packet)) && !row_packet->eof) {
 		const MYSQLND_RES_METADATA * const meta = result->meta;
 		unsigned int i, field_count = result->field_count;
 
@@ -1147,7 +1118,7 @@ mysqlnd_fetch_stmt_row_cursor(MYSQLND_RES * result, void * param, const unsigned
 			row_packet->row_buffer = NULL;
 		}
 		/* We asked for one row, the next one should be EOF, eat it */
-		ret = PACKET_READ(row_packet);
+		ret = PACKET_READ(conn, row_packet);
 		if (row_packet->row_buffer) {
 			row_packet->result_set_memory_pool->free_chunk(
 				row_packet->result_set_memory_pool, row_packet->row_buffer);
@@ -1277,15 +1248,10 @@ MYSQLND_METHOD(mysqlnd_stmt, reset)(MYSQLND_STMT * const s)
 
 		if (GET_CONNECTION_STATE(&conn->state) == CONN_READY) {
 			size_t stmt_id = stmt->stmt_id;
-			struct st_mysqlnd_protocol_command * command = stmt->conn->command_factory(COM_STMT_RESET, stmt->conn, stmt_id);
-			ret = FAIL;
-			if (command) {
-				ret = command->run(command);
-				command->free_command(command);
 
-				if (ret == FAIL) {
-					COPY_CLIENT_ERROR(stmt->error_info, *conn->error_info);
-				}
+			ret = stmt->conn->run_command(COM_STMT_RESET, stmt->conn, stmt_id);
+			if (ret == FAIL) {
+				COPY_CLIENT_ERROR(stmt->error_info, *conn->error_info);
 			}
 		}
 		*stmt->upsert_status = *conn->upsert_status;
@@ -1388,14 +1354,10 @@ MYSQLND_METHOD(mysqlnd_stmt, send_long_data)(MYSQLND_STMT * const s, unsigned in
 			/* COM_STMT_SEND_LONG_DATA doesn't acknowledge with an OK packet */
 			{
 				const MYSQLND_CSTRING payload = {(const char *) cmd_buf, packet_len};
-				struct st_mysqlnd_protocol_command * command = conn->command_factory(COM_STMT_SEND_LONG_DATA, conn, payload);
-				ret = FAIL;
-				if (command) {
-					ret = command->run(command);
-					command->free_command(command);
-					if (ret == FAIL) {
-						COPY_CLIENT_ERROR(stmt->error_info, *conn->error_info);
-					}
+
+				ret = conn->run_command(COM_STMT_SEND_LONG_DATA, conn, payload);
+				if (ret == FAIL) {
+					COPY_CLIENT_ERROR(stmt->error_info, *conn->error_info);
 				}
 			}
 
@@ -2223,16 +2185,10 @@ MYSQLND_METHOD_PRIVATE(mysqlnd_stmt, close_on_server)(MYSQLND_STMT * const s, ze
 		if (GET_CONNECTION_STATE(&conn->state) == CONN_READY) {
 			enum_func_status ret = FAIL;
 			size_t stmt_id = stmt->stmt_id;
-			struct st_mysqlnd_protocol_command * command = conn->command_factory(COM_STMT_CLOSE, conn, stmt_id);
-			if (command) {
-				ret = command->run(command);
-				command->free_command(command);
 
-				if (ret == FAIL) {
-					COPY_CLIENT_ERROR(stmt->error_info, *conn->error_info);
-				}
-			}
+			ret = conn->run_command(COM_STMT_CLOSE, conn, stmt_id);
 			if (ret == FAIL) {
+				COPY_CLIENT_ERROR(stmt->error_info, *conn->error_info);
 				DBG_RETURN(FAIL);
 			}
 		}
