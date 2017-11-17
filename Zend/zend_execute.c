@@ -1364,7 +1364,6 @@ static zend_never_inline void zend_pre_incdec_overloaded_property(zval *object, 
 			ZVAL_COPY_VALUE(z, value);
 		}
 		ZVAL_DEREF(z);
-		SEPARATE_ZVAL_NOREF(z);
 		if (inc) {
 			increment_function(z);
 		} else {
@@ -1412,7 +1411,6 @@ static zend_never_inline void zend_assign_op_overloaded_property(zval *object, z
 		}
 		zptr = z;
 		ZVAL_DEREF(z);
-		SEPARATE_ZVAL_NOREF(z);
 		binary_op(z, z, value);
 		Z_OBJ_HT(obj)->write_property(&obj, property, z, cache_slot);
 		if (UNEXPECTED(result)) {
@@ -1883,7 +1881,7 @@ static zend_always_inline void zend_fetch_property_address(zval *result, zval *c
 	}
 	if (prop_op_type == IS_CONST &&
 	    EXPECTED(Z_OBJCE_P(container) == CACHED_PTR_EX(cache_slot))) {
-		intptr_t prop_offset = (intptr_t)CACHED_PTR_EX(cache_slot + 1);
+		uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 		zend_object *zobj = Z_OBJ_P(container);
 		zval *retval;
 

@@ -830,7 +830,6 @@ ZEND_VM_HELPER(zend_binary_assign_op_obj_helper, VAR|UNUSED|CV, CONST|TMPVAR|CV,
 				}
 			} else {
 				ZVAL_DEREF(zptr);
-				SEPARATE_ZVAL_NOREF(zptr);
 
 				binary_op(zptr, zptr, value);
 				if (UNEXPECTED(RETURN_VALUE_USED(opline))) {
@@ -881,7 +880,6 @@ ZEND_VM_C_LABEL(assign_dim_op_new_array):
 				ZEND_VM_C_GOTO(assign_dim_op_ret_null);
 			}
 			ZVAL_DEREF(var_ptr);
-			SEPARATE_ZVAL_NOREF(var_ptr);
 		}
 
 		value = get_op_data_zval_ptr_r((opline+1)->op1_type, (opline+1)->op1, &free_op_data1);
@@ -956,7 +954,6 @@ ZEND_VM_HELPER(zend_binary_assign_op_simple_helper, VAR|CV, CONST|TMPVAR|CV, bin
 		}
 	} else {
 		ZVAL_DEREF(var_ptr);
-		SEPARATE_ZVAL_NOREF(var_ptr);
 
 		binary_op(var_ptr, var_ptr, value);
 
@@ -1097,7 +1094,6 @@ ZEND_VM_HELPER(zend_pre_incdec_property_helper, VAR|UNUSED|CV, CONST|TMPVAR|CV, 
 					}
 				} else {
 					ZVAL_DEREF(zptr);
-					SEPARATE_ZVAL_NOREF(zptr);
 
 					if (inc) {
 						increment_function(zptr);
@@ -1231,7 +1227,6 @@ ZEND_VM_HANDLER(34, ZEND_PRE_INC, VAR|CV, ANY, SPEC(RETVAL))
 		var_ptr = GET_OP1_UNDEF_CV(var_ptr, BP_VAR_RW);
 	}
 	ZVAL_DEREF(var_ptr);
-	SEPARATE_ZVAL_NOREF(var_ptr);
 
 	increment_function(var_ptr);
 
@@ -1271,7 +1266,6 @@ ZEND_VM_HANDLER(35, ZEND_PRE_DEC, VAR|CV, ANY, SPEC(RETVAL))
 		var_ptr = GET_OP1_UNDEF_CV(var_ptr, BP_VAR_RW);
 	}
 	ZVAL_DEREF(var_ptr);
-	SEPARATE_ZVAL_NOREF(var_ptr);
 
 	decrement_function(var_ptr);
 
@@ -1792,7 +1786,7 @@ ZEND_VM_HANDLER(82, ZEND_FETCH_OBJ_R, CONST|TMP|VAR|UNUSED|THIS|CV, CONST|TMPVAR
 			cache_slot = CACHE_ADDR(Z_CACHE_SLOT_P(offset));
 
 			if (EXPECTED(zobj->ce == CACHED_PTR_EX(cache_slot))) {
-				intptr_t prop_offset = (intptr_t)CACHED_PTR_EX(cache_slot + 1);
+				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
 					retval = OBJ_PROP(zobj, prop_offset);
@@ -1802,7 +1796,7 @@ ZEND_VM_HANDLER(82, ZEND_FETCH_OBJ_R, CONST|TMP|VAR|UNUSED|THIS|CV, CONST|TMPVAR
 					}
 				} else if (EXPECTED(zobj->properties != NULL)) {
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
-						intptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
+						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
 
 						if (EXPECTED(idx < zobj->properties->nNumUsed * sizeof(Bucket))) {
 							Bucket *p = (Bucket*)((char*)zobj->properties->arData + idx);
@@ -1821,7 +1815,7 @@ ZEND_VM_HANDLER(82, ZEND_FETCH_OBJ_R, CONST|TMP|VAR|UNUSED|THIS|CV, CONST|TMPVAR
 					}
 					retval = zend_hash_find(zobj->properties, Z_STR_P(offset));
 					if (EXPECTED(retval)) {
-						intptr_t idx = (char*)retval - (char*)zobj->properties->arData;
+						uintptr_t idx = (char*)retval - (char*)zobj->properties->arData;
 						CACHE_PTR_EX(cache_slot + 1, (void*)ZEND_ENCODE_DYN_PROP_OFFSET(idx));
 						ZVAL_COPY_UNREF(EX_VAR(opline->result.var), retval);
 						break;
@@ -1937,7 +1931,7 @@ ZEND_VM_HANDLER(91, ZEND_FETCH_OBJ_IS, CONST|TMPVAR|UNUSED|THIS|CV, CONST|TMPVAR
 			cache_slot = CACHE_ADDR(Z_CACHE_SLOT_P(offset));
 
 			if (EXPECTED(zobj->ce == CACHED_PTR_EX(cache_slot))) {
-				intptr_t prop_offset = (intptr_t)CACHED_PTR_EX(cache_slot + 1);
+				uintptr_t prop_offset = (uintptr_t)CACHED_PTR_EX(cache_slot + 1);
 
 				if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
 					retval = OBJ_PROP(zobj, prop_offset);
@@ -1947,7 +1941,7 @@ ZEND_VM_HANDLER(91, ZEND_FETCH_OBJ_IS, CONST|TMPVAR|UNUSED|THIS|CV, CONST|TMPVAR
 					}
 				} else if (EXPECTED(zobj->properties != NULL)) {
 					if (!IS_UNKNOWN_DYNAMIC_PROPERTY_OFFSET(prop_offset)) {
-						intptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
+						uintptr_t idx = ZEND_DECODE_DYN_PROP_OFFSET(prop_offset);
 
 						if (EXPECTED(idx < zobj->properties->nNumUsed * sizeof(Bucket))) {
 							Bucket *p = (Bucket*)((char*)zobj->properties->arData + idx);
@@ -1966,7 +1960,7 @@ ZEND_VM_HANDLER(91, ZEND_FETCH_OBJ_IS, CONST|TMPVAR|UNUSED|THIS|CV, CONST|TMPVAR
 					}
 					retval = zend_hash_find(zobj->properties, Z_STR_P(offset));
 					if (EXPECTED(retval)) {
-						intptr_t idx = (char*)retval - (char*)zobj->properties->arData;
+						uintptr_t idx = (char*)retval - (char*)zobj->properties->arData;
 						CACHE_PTR_EX(cache_slot + 1, (void*)ZEND_ENCODE_DYN_PROP_OFFSET(idx));
 						ZVAL_COPY(EX_VAR(opline->result.var), retval);
 						break;
@@ -2126,7 +2120,7 @@ ZEND_VM_HANDLER(136, ZEND_ASSIGN_OBJ, VAR|UNUSED|THIS|CV, CONST|TMPVAR|CV, SPEC(
 
 	if (OP2_TYPE == IS_CONST &&
 	    EXPECTED(Z_OBJCE_P(object) == CACHED_PTR(Z_CACHE_SLOT_P(property)))) {
-		intptr_t prop_offset = (intptr_t)CACHED_PTR(Z_CACHE_SLOT_P(property) + sizeof(void*));
+		uintptr_t prop_offset = (uintptr_t)CACHED_PTR(Z_CACHE_SLOT_P(property) + sizeof(void*));
 		zend_object *zobj = Z_OBJ_P(object);
 		zval *property_val;
 
@@ -7567,7 +7561,7 @@ ZEND_VM_HOT_HANDLER(168, ZEND_BIND_GLOBAL, CV, CONST)
 	zval *varname;
 	zval *value;
 	zval *variable_ptr;
-	intptr_t idx;
+	uintptr_t idx;
 	zend_reference *ref;
 
 	ZEND_VM_REPEATABLE_OPCODE
@@ -7575,7 +7569,7 @@ ZEND_VM_HOT_HANDLER(168, ZEND_BIND_GLOBAL, CV, CONST)
 	varname = GET_OP2_ZVAL_PTR(BP_VAR_R);
 
 	/* We store "hash slot index" + 1 (NULL is a mark of uninitialized cache slot) */
-	idx = (intptr_t)CACHED_PTR(Z_CACHE_SLOT_P(varname)) - 1;
+	idx = (uintptr_t)CACHED_PTR(Z_CACHE_SLOT_P(varname)) - 1;
 	if (EXPECTED(idx < EG(symbol_table).nNumUsed * sizeof(Bucket))) {
 		Bucket *p = (Bucket*)((char*)EG(symbol_table).arData + idx);
 
